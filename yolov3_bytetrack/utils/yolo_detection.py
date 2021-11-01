@@ -245,26 +245,17 @@ def get_detections(im, det, thresh, names, classes):
 
     return valid, detection
 
-def get_detections_ex(shape, det, thresh, names, classes):
-    num = 0
-    detection = None
-    classname = ''
-    score = 0.0
-    for j in range(classes):
-        if det["prob"][j] > thresh:
-            num += 1
-            if num == 1:
-                classname = names[j]
-                score = round(det["prob"][j], 4)
-
-    if num > 0:
+def get_detections_ex(shape, det, thresh, classes):
+    detection = {}
+    scores = np.sort(det["prob"])[::-1]
+    index = np.argsort(det["prob"])[::-1]
+    if scores[0] > thresh:
         imh, imw, imc = shape
         b = det["bbox"]
         left = int((b.x - b.w / 2.0) * imw)
         right = int((b.x + b.w / 2.0) * imw)
         top = int((b.y - b.h / 2.0) * imh)
         bot = int((b.y + b.h / 2.0) * imh)
-
         if left < 0:
             left = 0
         if right > imw - 1:
@@ -273,20 +264,16 @@ def get_detections_ex(shape, det, thresh, names, classes):
             top = 0
         if bot > imh - 1:
             bot = imh - 1
-
         detection = {
-            "classname": classname,
-            "score": score,
+            "cls_id": index[0],
+            "score": scores[0],
             "left": left,
             "top": top,
             "right": right,
             "bot": bot,
         }
 
-        if num > 1:
-            print("TODO: get_detections_ex num > 1,", num)
-
-    return num > 0, detection
+    return detection
 
 
 def draw_detections(font_path, im, dets, thresh, names, classes):

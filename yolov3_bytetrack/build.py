@@ -140,8 +140,8 @@ while True:
   print("##", cnt)
   final_dets = []
   for det in dets:
-      valid, detection = tvm.relay.testing.yolo_detection.get_detections_ex(img_rgb.shape, det, thresh, classes)
-      if valid:
+      detection = tvm.relay.testing.yolo_detection.get_detections_ex(img_rgb.shape, det, thresh, classes)
+      if len(detection) > 0:
           cls_id = detection["cls_id"]
           name = names[cls_id]
           if name != 'person' and name != 'bicycle' and name != 'car' and \
