@@ -45,7 +45,7 @@ def make_parser():
     parser.add_argument("--track_thresh", type=float, default=0.5, help="tracking confidence threshold")
     parser.add_argument("--track_buffer", type=int, default=30, help="the frames for keep lost tracks")
     parser.add_argument("--match_thresh", type=int, default=0.8, help="matching threshold for tracking")
-    parser.add_argument('--min-box-area', type=float, default=10, help='filter out tiny boxes')
+    parser.add_argument('--min_box_area', type=float, default=10, help='filter out tiny boxes')
     parser.add_argument("--mot20", dest="mot20", default=False, action="store_true", help="test mot20.")
     return parser
 
@@ -107,8 +107,7 @@ while True:
   if not ret_val:
       print("read file end")
       break
-  img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-  img_data = tvm.relay.testing.darknet.load_image_ex(img_rgb, w, h)
+  img_data = tvm.relay.testing.darknet.load_image_ex(img, w, h)
   img_data = tvm.nd.array(img_data.astype(dtype))
   module.set_input(input_name, img_data)
   module.run()
@@ -128,7 +127,7 @@ while True:
   nms_thresh = 0.45
   classes = 8
   # do the detection and bring up the bounding boxes
-  im_h, im_w, _ = img_rgb.shape
+  im_h, im_w, _ = img.shape
   dets = tvm.relay.testing.yolo_detection.fill_network_boxes(
       (w, h), (im_w, im_h), thresh, 1, tvm_out
   )
@@ -140,7 +139,7 @@ while True:
   print("##", cnt)
   final_dets = []
   for det in dets:
-      detection = tvm.relay.testing.yolo_detection.get_detections_ex(img_rgb.shape, det, thresh, classes)
+      detection = tvm.relay.testing.yolo_detection.get_detections_ex(img.shape, det, thresh, classes)
       if len(detection) > 0:
           cls_id = detection["cls_id"]
           name = names[cls_id]
@@ -167,19 +166,22 @@ while True:
       tlwh = t.tlwh
       tid = t.track_id
       cls_id = int(t.cls_id)
+      class_name = names[cls_id]
       vertical = tlwh[2] / tlwh[3] > 1.6
-      if tlwh[2] * tlwh[3] > args.min_box_area and not vertical:
+      box_area = tlwh[2] * tlwh[3]
+      exception = class_name == 'person' and (tlwh[2] > width/2 or tlwh[3] > height/2)
+      if box_area > args.min_box_area and not vertical and not exception:
           online_tlwhs.append(tlwh)
           online_ids.append(tid)
           online_scores.append(t.score)
           id_text = '{}'.format(int(tid))
-          class_name = names[cls_id]
           x1 = int(tlwh[0])
           y1 = int(tlwh[1])
           x2 = int(tlwh[0] + tlwh[2])
           y2 = int(tlwh[1] + tlwh[3])
           cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 1)
           cv2.putText(img, id_text + ":" + class_name, (x1, y1), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2)
+          print(x1,y1,x2-x1,y2-y1,id_text + ":" + class_name)
   vid_writer.write(img)
   #cv2.imshow("test", img)
   #cv2.waitKey(1)
