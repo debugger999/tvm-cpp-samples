@@ -7,9 +7,22 @@
 #include <tvm/runtime/ndarray.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/highgui/highgui_c.h>
 #include "darknet.h"
 
+//#define DISPLAY
+
 using namespace cv;
+using namespace std;
+
+typedef struct {
+    int left;
+    int top;
+    int right;
+    int bottom;
+    int classid;
+    float score;
+} DetectResult;
 
 int WriteFile(const char *filename, void *buf, int size, const char *mode) {
     FILE *fp = fopen(filename, mode);
@@ -37,28 +50,40 @@ int CalMax(float *buf, int len, float &val, int &index, float max) {
 }
 
 static int get_detections(detection *dets, int nboxes, 
-        float thresh, char **names, int classes, image *frame) {
-    for(int i = 0; i < nboxes; ++i){
-        int cls_id = -1;
+            float thresh, int classes, image *frame, vector <DetectResult> &vec) {
+    for(int i = 0; i < nboxes; ++i) {
+        int classid = -1;
         float score = 0.0;
         for(int j = 0; j < classes; ++j){
             if(dets[i].prob[j] > thresh && dets[i].prob[j] > score){
-                cls_id = j;
+                classid = j;
                 score = dets[i].prob[j];
             }
         }
-        if(cls_id >= 0){
+        if(classid >= 0){
             box b = dets[i].bbox;
             int left  = (b.x-b.w/2.)*frame->w;
             int right = (b.x+b.w/2.)*frame->w;
             int top   = (b.y-b.h/2.)*frame->h;
-            int bot   = (b.y+b.h/2.)*frame->h;
+            int bottom   = (b.y+b.h/2.)*frame->h;
+            int w = right - left;
+            int h = bottom - top;
+            if(w > frame->w/2 || h > frame->h/2 || w*h < 20) {
+                continue;
+            }
             if(left < 0) left = 0;
             if(right > frame->w-1) right = frame->w-1;
             if(top < 0) top = 0;
-            if(bot > frame->h-1) bot = frame->h-1;
-            printf("class:%d,name:%s,score:%f,left:%d,top:%d,right:%d,bot:%d\n", 
-                    cls_id, names[cls_id], score, left, top, right, bot);
+            if(bottom > frame->h-1) bottom = frame->h-1;
+
+            DetectResult det;
+            det.left = left;
+            det.top = top;
+            det.right = right;
+            det.bottom = bottom;
+            det.classid = classid;
+            det.score = score;
+            vec.push_back(det);
         }
     }
     
@@ -158,7 +183,8 @@ int main(int argc, char *argv[]) {
 
     int cnt = 0;
     int classes = 8;
-    float thresh = 0.2;
+    //float thresh = 0.2;
+    float thresh = 0.5;
     float nms_thresh = 0.45;
     int yolo_layer_num = 3;
     network *net = (network *)calloc(1, sizeof(network));
@@ -166,13 +192,20 @@ int main(int argc, char *argv[]) {
     net->w = w;
     net->h = h;
     net->layers = (layer *)calloc(net->n, sizeof(layer));
+
+#ifdef DISPLAY
+    CvFont font;
+    cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 1, 1, 1);
+    namedWindow("test", WINDOW_NORMAL);
+#endif
+    Mat img;
     while(1) {
-        printf("cnt:%d\n", cnt);
-        image frame = get_image_from_stream(&capture);
-        if(!frame.data) {
+        capture >> img;
+        if(img.empty()) {
             printf("read end, %s\n", video_file);
             break;
         }
+        image frame = mat_to_image_ex(&img);
         image frame_s = letterbox_image(frame, w, h);
         TVMArrayCopyFromBytes(input, frame_s.data, size);
         set_input("data", input);
@@ -181,14 +214,23 @@ int main(int argc, char *argv[]) {
         int nboxes = 0;
         detection *dets = get_network_boxes(net, width, height, thresh, 0.5, 0, 1, &nboxes);
         do_nms_sort(dets, nboxes, classes, nms_thresh);
-        printf("nboxes:%d\n", nboxes);
-        get_detections(dets, nboxes, thresh, names, classes, &frame);
-        cnt ++; 
-        //if(cnt >= 3)break;
+        vector <DetectResult> vec;
+        get_detections(dets, nboxes, thresh, classes, &frame, vec);
+        printf("cnt:%d, obj:%ld\n", cnt, vec.size());
+#ifdef DISPLAY
+        CvMat _img = cvMat(img);
+        for(unsigned int i = 0; i < vec.size(); i++) {
+            DetectResult det = vec[i];
+            cvRectangle(&_img, cvPoint(det.left, det.top), cvPoint(det.right, det.bottom), cvScalar(0,255,0));
+            cvPutText(&_img, names[det.classid], cvPoint(det.left, det.top), &font, cvScalar(0,0,255));
+        }
+        imshow("test", img);
+        waitKey(10);
+#endif
         free_detections(dets, nboxes);
         free_image(frame_s);
         free_image(frame);
-        usleep(10000);
+        cnt ++; 
     }
 
     for(int i = 0; i < yolo_layer_num; i ++) {
