@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <unistd.h>
+#include <sys/time.h>
 #include <dlpack/dlpack.h>
 #include <tvm/runtime/module.h>
 #include <tvm/runtime/packed_func.h>
@@ -8,22 +9,23 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/highgui/highgui_c.h>
+#include <opencv2/videoio/videoio_c.h>
 #include "darknet.h"
+#include "BYTETracker.h"
 
 //#define DISPLAY
 
 using namespace cv;
 using namespace std;
 
-typedef struct {
-    int left;
-    int top;
-    int right;
-    int bottom;
-    int classid;
-    float score;
-} DetectResult;
-
+/*
+struct timeval t0, t1, t2, t3;
+printf("ms cost,%ld,%ld,%ld\n", 
+        (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000,
+        (t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_usec - t1.tv_usec) / 1000,
+        (t3.tv_sec - t2.tv_sec) * 1000 + (t3.tv_usec - t2.tv_usec) / 1000
+        );
+*/
 int WriteFile(const char *filename, void *buf, int size, const char *mode) {
     FILE *fp = fopen(filename, mode);
     if(fp == NULL) {
@@ -49,8 +51,7 @@ int CalMax(float *buf, int len, float &val, int &index, float max) {
     return 0;
 }
 
-static int get_detections(detection *dets, int nboxes, 
-            float thresh, int classes, image *frame, vector <DetectResult> &vec) {
+static int get_detections(detection *dets, int nboxes, float thresh, int classes, image *frame, vector<Object>& objects) {
     for(int i = 0; i < nboxes; ++i) {
         int classid = -1;
         float score = 0.0;
@@ -66,24 +67,23 @@ static int get_detections(detection *dets, int nboxes,
             int right = (b.x+b.w/2.)*frame->w;
             int top   = (b.y-b.h/2.)*frame->h;
             int bottom   = (b.y+b.h/2.)*frame->h;
+            if(left < 0) left = 0;
+            if(right > frame->w-1) right = frame->w-1;
+            if(top < 0) top = 0;
+            if(bottom > frame->h-1) bottom = frame->h-1;
             int w = right - left;
             int h = bottom - top;
             if(w > frame->w/2 || h > frame->h/2 || w*h < 20) {
                 continue;
             }
-            if(left < 0) left = 0;
-            if(right > frame->w-1) right = frame->w-1;
-            if(top < 0) top = 0;
-            if(bottom > frame->h-1) bottom = frame->h-1;
-
-            DetectResult det;
-            det.left = left;
-            det.top = top;
-            det.right = right;
-            det.bottom = bottom;
-            det.classid = classid;
-            det.score = score;
-            vec.push_back(det);
+            Object det;
+            det.rect.x = left;
+            det.rect.y = top;
+            det.rect.width = w;
+            det.rect.height = h;
+            det.label = classid;
+            det.prob = score;
+            objects.push_back(det);
         }
     }
     
@@ -102,7 +102,9 @@ static int get_out(network *net, int layer_num, tvm::runtime::PackedFunc get_out
         dptr = out.operator->();
         size = tvm::runtime::GetDataSize(*dptr);
         int* layer_attr = (int* )malloc(size);
+        //if(i == 0)gettimeofday(&t1, NULL);
         out.CopyToBytes(layer_attr,  size);
+        //if(i == 0)gettimeofday(&t2, NULL);
         layer->batch = 1;
         layer->n = layer_attr[0];
         layer->c = layer_attr[1];
@@ -155,6 +157,7 @@ int main(int argc, char *argv[]) {
         printf("usage: ./deploy video\n");
         return 0;
     }
+    // init detector
     std::string lib = "libyolov3.so";
     char **names = get_labels((char *)"coco.names");
     tvm::runtime::Module mod_factory = tvm::runtime::Module::LoadFromFile(lib);
@@ -171,6 +174,7 @@ int main(int argc, char *argv[]) {
     }
     int width = capture.get(CAP_PROP_FRAME_WIDTH);
     int height = capture.get(CAP_PROP_FRAME_HEIGHT);
+    int fps = capture.get(CV_CAP_PROP_FPS);
     printf("open %s success, %dx%d\n", video_file, width, height);
 
     TVMArrayAlloc(shape, ndim, dtype_code, dtype_bits, dtype_lanes, device_type, device_id, &input);
@@ -193,6 +197,9 @@ int main(int argc, char *argv[]) {
     net->h = h;
     net->layers = (layer *)calloc(net->n, sizeof(layer));
 
+    // init bytetrack
+    BYTETracker tracker(fps, 30);
+
 #ifdef DISPLAY
     CvFont font;
     cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 1, 1, 1);
@@ -200,6 +207,7 @@ int main(int argc, char *argv[]) {
 #endif
     Mat img;
     while(1) {
+        //gettimeofday(&t0, NULL);
         capture >> img;
         if(img.empty()) {
             printf("read end, %s\n", video_file);
@@ -214,15 +222,21 @@ int main(int argc, char *argv[]) {
         int nboxes = 0;
         detection *dets = get_network_boxes(net, width, height, thresh, 0.5, 0, 1, &nboxes);
         do_nms_sort(dets, nboxes, classes, nms_thresh);
-        vector <DetectResult> vec;
-        get_detections(dets, nboxes, thresh, classes, &frame, vec);
-        printf("cnt:%d, obj:%ld\n", cnt, vec.size());
+        vector<Object> objects;
+        get_detections(dets, nboxes, thresh, classes, &frame, objects);
+        //gettimeofday(&t3, NULL);
+        vector<STrack> output_stracks = tracker.update(objects);
+        printf("cnt:%d, obj:%ld\n", cnt, output_stracks.size());
 #ifdef DISPLAY
         CvMat _img = cvMat(img);
-        for(unsigned int i = 0; i < vec.size(); i++) {
-            DetectResult det = vec[i];
-            cvRectangle(&_img, cvPoint(det.left, det.top), cvPoint(det.right, det.bottom), cvScalar(0,255,0));
-            cvPutText(&_img, names[det.classid], cvPoint(det.left, det.top), &font, cvScalar(0,0,255));
+        for(unsigned int i = 0; i < output_stracks.size(); i++) {
+            int track_id = output_stracks[i].track_id;
+            int label = output_stracks[i].label;
+            vector<float> tlwh = output_stracks[i].tlwh;
+            cvRectangle(&_img, cvPoint(tlwh[0], tlwh[1]), 
+                    cvPoint(tlwh[0]+tlwh[2], tlwh[1]+tlwh[3]), cvScalar(0,255,0));
+            cvPutText(&_img, format("%d:%s", track_id, names[label]).c_str(), 
+                    cvPoint(tlwh[0], tlwh[1]), &font, cvScalar(0,0,255));
         }
         imshow("test", img);
         waitKey(10);
