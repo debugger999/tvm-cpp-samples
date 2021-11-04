@@ -17,13 +17,13 @@
 
 using namespace cv;
 using namespace std;
-
 /*
-struct timeval t0, t1, t2, t3;
-printf("ms cost,%ld,%ld,%ld\n", 
+struct timeval t0, t1, t2, t3, t4;
+printf("time cost,ms,%ld,%ld,%ld,%ld\n", 
         (t1.tv_sec - t0.tv_sec) * 1000 + (t1.tv_usec - t0.tv_usec) / 1000,
         (t2.tv_sec - t1.tv_sec) * 1000 + (t2.tv_usec - t1.tv_usec) / 1000,
-        (t3.tv_sec - t2.tv_sec) * 1000 + (t3.tv_usec - t2.tv_usec) / 1000
+        (t3.tv_sec - t2.tv_sec) * 1000 + (t3.tv_usec - t2.tv_usec) / 1000,
+        (t4.tv_sec - t3.tv_sec) * 1000 + (t4.tv_usec - t3.tv_usec) / 1000
         );
 */
 int WriteFile(const char *filename, void *buf, int size, const char *mode) {
@@ -200,12 +200,18 @@ int main(int argc, char *argv[]) {
     // init bytetrack
     BYTETracker tracker(fps, 30);
 
-#ifdef DISPLAY
     CvFont font;
     cvInitFont(&font, CV_FONT_HERSHEY_SIMPLEX, 1, 1, 1);
+#ifdef DISPLAY
     namedWindow("test", WINDOW_NORMAL);
 #endif
     Mat img;
+    int fourcc = VideoWriter::fourcc('X', 'V', 'I', 'D');
+    VideoWriter writer("output.avi", fourcc, fps, Size(width, height));
+    if (!writer.isOpened()) {
+        printf("open output.avi failed\n");
+        return -1;
+    }
     while(1) {
         //gettimeofday(&t0, NULL);
         capture >> img;
@@ -226,8 +232,8 @@ int main(int argc, char *argv[]) {
         get_detections(dets, nboxes, thresh, classes, &frame, objects);
         //gettimeofday(&t3, NULL);
         vector<STrack> output_stracks = tracker.update(objects);
+        //gettimeofday(&t4, NULL);
         printf("cnt:%d, obj:%ld\n", cnt, output_stracks.size());
-#ifdef DISPLAY
         CvMat _img = cvMat(img);
         for(unsigned int i = 0; i < output_stracks.size(); i++) {
             int track_id = output_stracks[i].track_id;
@@ -238,6 +244,8 @@ int main(int argc, char *argv[]) {
             cvPutText(&_img, format("%d:%s", track_id, names[label]).c_str(), 
                     cvPoint(tlwh[0], tlwh[1]), &font, cvScalar(0,0,255));
         }
+        writer.write(img);
+#ifdef DISPLAY
         imshow("test", img);
         waitKey(10);
 #endif
